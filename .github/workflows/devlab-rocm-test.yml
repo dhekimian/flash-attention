@@ -62,6 +62,17 @@ jobs:
       TORCH_INDEX_MAP: ${{ vars.TORCH_INDEX_MAP }}
       SAMPLER_DIR: ${{ github.workspace }}/.devlab
     steps:
+      # A runner whose workspace outlived an earlier job (e.g. one cancelled
+      # mid-build) can hold root-owned files from that job's container, and
+      # checkout cannot delete them.
+      - name: Clear root-owned files left in the workspace
+        run: |
+          ws="$GITHUB_WORKSPACE"
+          if [ -n "$(find "$ws" -mindepth 1 ! -user "$(id -u)" -print -quit 2>/dev/null)" ]; then
+            echo "workspace has files from an earlier container; resetting ownership"
+            docker run --rm -v "$ws:/w" busybox:1.36 chown -R "$(id -u):$(id -g)" /w
+          fi
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -120,6 +131,8 @@ jobs:
             --security-opt seccomp=unconfined -v "$PWD:/src" -w /src \
             -e BACKEND=${{ matrix.backend }} -e GFX=${{ matrix.gfx }} -e TESTS=${{ matrix.tests }} \
             -e PER_FUNCTION -e TORCH_INDEX_URL -e TORCH_EXTRA_INDEX_ARGS "$IMAGE" bash -euo pipefail -c '
+              # Hand /src back to the runner user however this exits.
+              trap '"'"'chown -R "$(stat -c %u:%g /src/.git)" /src'"'"' EXIT
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq && apt-get install -y -qq python3-venv python3-dev git ninja-build >/dev/null
               # setup.py runs `git submodule update` in the bind-mounted checkout.
@@ -156,7 +169,6 @@ jobs:
               PYTHONPATH=/src/.devlab DEVLAB_PER="$PER_FUNCTION" DEVLAB_GROUP=function \
                 python -m pytest "$TESTS" -p devlab_sample -q -rf -p no:cacheprovider --timeout=600 \
                 --junitxml=/src/junit.xml || rc=$?
-              chown -R "$(stat -c %u:%g /src)" /src
               exit $rc
             '
 
