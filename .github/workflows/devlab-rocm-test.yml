@@ -60,10 +60,39 @@ jobs:
       PER_FUNCTION: ${{ inputs.tests_per_function || '20' }}
       LABEL: ${{ inputs.label || 'release' }}
       TORCH_INDEX_MAP: ${{ vars.TORCH_INDEX_MAP }}
+      SAMPLER_DIR: ${{ github.workspace }}/.devlab
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Write the test sampler
+        run: |
+          # A pytest plugin that keeps a deterministic sample at collection time:
+          # every pytest-xdist worker selects the same tests, and node ids never
+          # pass through the shell.
+          mkdir -p "$SAMPLER_DIR"
+          cat > "$SAMPLER_DIR/devlab_sample.py" <<'PY'
+          import os
+          from collections import defaultdict
+
+
+          def pytest_collection_modifyitems(config, items):
+              per = int(os.environ.get("DEVLAB_PER") or 0)
+              if per <= 0:
+                  return
+              by_file = os.environ.get("DEVLAB_GROUP", "function") == "file"
+              groups = defaultdict(list)
+              for item in items:
+                  nodeid = item.nodeid
+                  groups[nodeid.split("::")[0] if by_file else nodeid.split("[")[0]].append(item)
+              keep = set()
+              for members in groups.values():
+                  step = max(1, len(members) // per)
+                  keep.update(id(i) for i in members[::step][:per])
+              config.hook.pytest_deselected(items=[i for i in items if id(i) not in keep])
+              items[:] = [i for i in items if id(i) in keep]
+          PY
 
       - name: Build and test (${{ matrix.backend }}) in ${{ env.IMAGE }}
         run: |
@@ -88,6 +117,9 @@ jobs:
               python3 -m venv /venv && . /venv/bin/activate
               pip install -q --upgrade pip
               pip install -q torch --index-url "$TORCH_INDEX_URL"
+              # Pin torch for every later pip call (a CUDA wheel from PyPI would replace it).
+              pip freeze | grep -iE "^(torch|triton|pytorch-triton-rocm)==" > /tmp/torch-pin.txt
+              export PIP_CONSTRAINT=/tmp/torch-pin.txt
               pip install -q packaging wheel psutil pytest pytest-timeout einops
               if [ "$BACKEND" = triton ]; then export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE; fi
               export GPU_ARCHS="$GFX" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS:-$(nproc)}"
@@ -108,23 +140,10 @@ jobs:
           if "$BACKEND" == "ck":
               assert ck, "CK extension not loaded: this would test the Triton fallback"
           PY
-              python -m pytest "$TESTS" --collect-only -q -p no:cacheprovider 2>/dev/null | grep "::" > all.txt || true
-              python3 - "$PER_FUNCTION" <<PY > sample.txt
-          import sys
-          from collections import defaultdict
-          per = int(sys.argv[1]); by = defaultdict(list)
-          for line in open("all.txt"):
-              n = line.strip()
-              n = n if n.startswith("tests/") else "tests/" + n
-              by[n.split("[")[0]].append(n)
-          for fn, ns in sorted(by.items()):
-              step = max(1, len(ns) // per)
-              for n in ns[::step][:per]:
-                  print(n)
-          PY
-              echo "running $(wc -l < sample.txt) of $(wc -l < all.txt) collected cases"
               rc=0
-              python -m pytest -q -rf -p no:cacheprovider --timeout=600 --junitxml=/src/junit.xml $(cat sample.txt) || rc=$?
+              PYTHONPATH=/src/.devlab DEVLAB_PER="$PER_FUNCTION" DEVLAB_GROUP=function \
+                python -m pytest "$TESTS" -p devlab_sample -q -rf -p no:cacheprovider --timeout=600 \
+                --junitxml=/src/junit.xml || rc=$?
               chown -R "$(stat -c %u:%g /src)" /src
               exit $rc
             '
