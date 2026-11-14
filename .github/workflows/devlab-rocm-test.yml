@@ -102,25 +102,31 @@ jobs:
           # A runner pool with a package mirror maps public indexes to it with the
           # TORCH_INDEX_MAP repository variable (JSON: index URL -> mirror URL).
           # Unset, the index is used as given.
+          EXTRA=()
           if [ -n "${TORCH_INDEX_MAP:-}" ]; then
             idx_in="$INDEX"
-            INDEX=$(python3 -c 'import json,sys; m=json.loads(sys.argv[1]); u=sys.argv[2]; print(m.get(u.rstrip("/")+"/", m.get(u.rstrip("/"), u)))' "$TORCH_INDEX_MAP" "$INDEX")
-            [ "$INDEX" = "$idx_in" ] || echo "torch index mapped: $idx_in -> $INDEX"
+            # A value is a mirror URL, or a list [index, extra index, ...] when the
+            # mirror serves the index's packages from more than one repository.
+            idx=$(python3 -c 'import json,sys; m=json.loads(sys.argv[1]); u=sys.argv[2]; v=m.get(u.rstrip("/")+"/", m.get(u.rstrip("/"), u)); print("\n".join([v] if isinstance(v, str) else v))' "$TORCH_INDEX_MAP" "$INDEX")
+            mapfile -t idx <<<"$idx"
+            INDEX="${idx[0]}"
+            for e in "${idx[@]:1}"; do EXTRA+=(--extra-index-url "$e"); done
+            [ "$INDEX" = "$idx_in" ] && [ ${#idx[@]} -eq 1 ] || echo "torch index mapped: $idx_in -> $INDEX${EXTRA:+ (extra: ${idx[*]:1})}"
           fi
-          export TORCH_INDEX_URL="$INDEX"
+          export TORCH_INDEX_URL="$INDEX" TORCH_EXTRA_INDEX_ARGS="${EXTRA[*]}"
           # Host networking: the runner resolves its package mirror through
           # /etc/hosts, which a bridged container does not inherit.
           docker run --rm --network host --device=/dev/kfd --device=/dev/dri --group-add video --group-add render \
             --security-opt seccomp=unconfined -v "$PWD:/src" -w /src \
             -e BACKEND=${{ matrix.backend }} -e GFX=${{ matrix.gfx }} -e TESTS=${{ matrix.tests }} \
-            -e PER_FUNCTION -e TORCH_INDEX_URL "$IMAGE" bash -euo pipefail -c '
+            -e PER_FUNCTION -e TORCH_INDEX_URL -e TORCH_EXTRA_INDEX_ARGS "$IMAGE" bash -euo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq && apt-get install -y -qq python3-venv python3-dev git ninja-build >/dev/null
               # setup.py runs `git submodule update` in the bind-mounted checkout.
               git config --global --add safe.directory "*"
               python3 -m venv /venv && . /venv/bin/activate
               pip install -q --upgrade pip
-              pip install -q torch --index-url "$TORCH_INDEX_URL"
+              pip install -q torch --index-url "$TORCH_INDEX_URL" $TORCH_EXTRA_INDEX_ARGS
               # Pin torch for every later pip call (a CUDA wheel from PyPI would replace it).
               pip freeze | grep -iE "^(torch|triton|pytorch-triton-rocm)==" > /tmp/torch-pin.txt
               export PIP_CONSTRAINT=/tmp/torch-pin.txt
