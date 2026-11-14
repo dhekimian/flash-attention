@@ -1,3 +1,4 @@
 # Known upstream failures: reported as warnings, not errors, by the DevLab workflows.
 # One per line:  <fnmatch pattern on the pytest node id> | <reason> | <upstream issue URL or "not filed">
 # List a failure here only once it is classified as upstream, never for a setup bug of ours.
+*test_flash_attn_triton_amd.py::test_flash_attn_varlen_output?0.0-0.17-1023-1024-192-True-False-False-False-mha-dtype0-False? | SIGABRT in the test process on gfx1151 with Triton 3.9.0 (torch 2.15, ROCm 7.14 and 10.0); passes with Triton 3.8.0 and on gfx1201 | not filed
