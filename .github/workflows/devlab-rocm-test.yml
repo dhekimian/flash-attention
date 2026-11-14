@@ -59,8 +59,6 @@ jobs:
         include:
           - {gpu: strix-halo, gfx: gfx1151}
           - {gpu: radeon-r9700, gfx: gfx1201}
-          - {backend: ck, tests: tests/test_flash_attn_ck.py}
-          - {backend: triton, tests: tests/test_flash_attn_triton_amd.py}
     runs-on: [self-hosted, Linux, devlab-dispatch, "${{ matrix.gpu }}"]
     timeout-minutes: 180
     env:
@@ -144,7 +142,7 @@ jobs:
           for g in $(stat -c %g /dev/kfd /dev/dri/renderD* | sort -u); do GPU_GROUPS+=(--group-add "$g"); done
           docker run --rm --network host --device=/dev/kfd --device=/dev/dri "${GPU_GROUPS[@]}" \
             --security-opt seccomp=unconfined -v "$PWD:/src" -w /src \
-            -e BACKEND=${{ matrix.backend }} -e GFX=${{ matrix.gfx }} -e TESTS=${{ matrix.tests }} \
+            -e BACKEND=${{ matrix.backend }} -e GFX=${{ matrix.gfx }} -e TESTS=${{ matrix.backend == 'ck' && 'tests/test_flash_attn_ck.py' || 'tests/test_flash_attn_triton_amd.py' }} \
             -e PER_FUNCTION -e TORCH_INDEX_URL -e TORCH_EXTRA_INDEX_ARGS -e TORCH_SPEC "$IMAGE" bash -euo pipefail -c '
               # Hand /src back to the runner user however this exits.
               trap '"'"'chown -R "$(stat -c %u:%g /src/.git)" /src'"'"' EXIT
