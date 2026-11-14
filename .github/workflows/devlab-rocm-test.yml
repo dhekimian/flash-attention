@@ -1,0 +1,158 @@
+# Build and test flash-attention's ROCm backends on consumer AMD GPUs.
+#
+# setup.py accepts gfx1151 and gfx1201, and prebuilt ROCm wheels ship them,
+# but nothing runs the CK backend on any AMD GPU, and the Triton backend only
+# runs on MI35X and gfx1100 (in ROCm/aiter's CI). This builds each backend for
+# one GPU at a time -- a Radeon 8060S (Strix Halo, gfx1151) and a Radeon AI
+# PRO R9700 (gfx1201) -- and runs a deterministic sample of its tests.
+#
+# The CK leg asserts the CK extension is the one loaded: without it
+# flash_attn falls back to Triton and the leg would test the other backend.
+#
+# Every run uploads summary-*.json (versions, device, pass/fail counts).
+#
+# Runners: AMD DevLab, a donated pool of ephemeral, single-use machines. One
+# job per machine; nothing persists between jobs.
+name: ROCm test (gfx1151, gfx1201)
+
+on:
+  push:
+    branches: [main]
+    paths: ["csrc/**", "flash_attn/**", "hopper/**", "setup.py", "tests/test_flash_attn_ck.py",
+            "tests/test_flash_attn_triton_amd.py", "third_party/**", ".github/workflows/devlab-rocm-test.yml"]
+  workflow_dispatch:
+    inputs:
+      tests_per_function:
+        description: Test cases to run per test function
+        default: "20"
+  workflow_call:
+    inputs:
+      image: {type: string, default: rocm/dev-ubuntu-24.04:7.2.4-complete}
+      torch_index_url: {type: string, default: https://download.pytorch.org/whl/rocm7.2}
+      tests_per_function: {type: string, default: "20"}
+      label: {type: string, default: release}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rocm-test-${{ github.ref }}-${{ inputs.label || 'release' }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.backend }} on ${{ matrix.gpu }} (${{ matrix.gfx }})
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [ck, triton]
+        gpu: [strix-halo, radeon-r9700]
+        include:
+          - {gpu: strix-halo, gfx: gfx1151}
+          - {gpu: radeon-r9700, gfx: gfx1201}
+          - {backend: ck, tests: tests/test_flash_attn_ck.py}
+          - {backend: triton, tests: tests/test_flash_attn_triton_amd.py}
+    runs-on: [self-hosted, Linux, devlab-dispatch, "${{ matrix.gpu }}"]
+    timeout-minutes: 180
+    env:
+      IMAGE: ${{ inputs.image || 'rocm/dev-ubuntu-24.04:7.2.4-complete' }}
+      TORCH_INDEX_URL: ${{ inputs.torch_index_url || 'https://download.pytorch.org/whl/rocm7.2' }}
+      PER_FUNCTION: ${{ inputs.tests_per_function || '20' }}
+      LABEL: ${{ inputs.label || 'release' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build and test (${{ matrix.backend }}) in ${{ env.IMAGE }}
+        run: |
+          set -euo pipefail
+          docker pull -q "$IMAGE"
+          docker run --rm --device=/dev/kfd --device=/dev/dri --group-add video --group-add render \
+            --security-opt seccomp=unconfined -v "$PWD:/src" -w /src \
+            -e BACKEND=${{ matrix.backend }} -e GFX=${{ matrix.gfx }} -e TESTS=${{ matrix.tests }} \
+            -e PER_FUNCTION -e TORCH_INDEX_URL "$IMAGE" bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq && apt-get install -y -qq python3-venv python3-dev git ninja-build >/dev/null
+              python3 -m venv /venv && . /venv/bin/activate
+              pip install -q --upgrade pip
+              pip install -q torch --index-url "$TORCH_INDEX_URL"
+              pip install -q packaging wheel psutil pytest pytest-timeout einops
+              if [ "$BACKEND" = triton ]; then export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE; fi
+              export GPU_ARCHS="$GFX" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS:-$(nproc)}"
+              pip install -q --no-build-isolation . 2>&1 | tail -5
+              python - <<PY
+          import json, torch, flash_attn
+          p = torch.cuda.get_device_properties(0)
+          ck = True
+          try:
+              import flash_attn_2_cuda  # noqa: F401
+          except ImportError:
+              ck = False
+          info = {"torch": torch.__version__, "hip": torch.version.hip, "device": p.name,
+                  "arch": p.gcnArchName, "flash_attn": flash_attn.__version__, "ck_loaded": ck}
+          print(info)
+          json.dump(info, open("/src/env.json", "w"))
+          assert "$GFX" in p.gcnArchName, p.gcnArchName
+          if "$BACKEND" == "ck":
+              assert ck, "CK extension not loaded: this would test the Triton fallback"
+          PY
+              python -m pytest "$TESTS" --collect-only -q -p no:cacheprovider 2>/dev/null | grep "::" > all.txt || true
+              python3 - "$PER_FUNCTION" <<PY > sample.txt
+          import sys
+          from collections import defaultdict
+          per = int(sys.argv[1]); by = defaultdict(list)
+          for line in open("all.txt"):
+              n = line.strip()
+              n = n if n.startswith("tests/") else "tests/" + n
+              by[n.split("[")[0]].append(n)
+          for fn, ns in sorted(by.items()):
+              step = max(1, len(ns) // per)
+              for n in ns[::step][:per]:
+                  print(n)
+          PY
+              echo "running $(wc -l < sample.txt) of $(wc -l < all.txt) collected cases"
+              rc=0
+              python -m pytest -q -rf -p no:cacheprovider --timeout=600 --junitxml=/src/junit.xml $(cat sample.txt) || rc=$?
+              chown -R "$(stat -c %u:%g /src)" /src
+              exit $rc
+            '
+
+      - name: Write the run summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, datetime, xml.etree.ElementTree as ET
+          def load(p):
+              try:
+                  return json.load(open(p))
+              except Exception:
+                  return None
+          tests = None
+          if os.path.exists("junit.xml"):
+              s = ET.parse("junit.xml").getroot()
+              s = s if s.tag == "testsuite" else s.find("testsuite")
+              n = {k: int(s.get(k, 0)) for k in ("tests", "failures", "errors", "skipped")}
+              tests = {"ran": n["tests"], "failed": n["failures"], "errors": n["errors"],
+                       "skipped": n["skipped"],
+                       "passed": n["tests"] - n["failures"] - n["errors"] - n["skipped"],
+                       "seconds": round(float(s.get("time", 0)), 1)}
+          summary = {
+              "schema": 1, "project": "flash-attention", "label": os.environ["LABEL"],
+              "release": "${{ github.sha }}"[:12], "combo": "${{ matrix.backend }}",
+              "gpu": "${{ matrix.gpu }}", "gfx": "${{ matrix.gfx }}", "env": load("env.json"),
+              "smoke": None, "tests": tests, "job_status": "${{ job.status }}",
+              "run": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "finished": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+          }
+          json.dump(summary, open("summary.json", "w"), indent=1)
+          print(json.dumps(summary, indent=1))
+          PY
+
+      - name: Upload the run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devlab-summary-${{ inputs.label || 'release' }}-${{ matrix.backend }}-${{ matrix.gpu }}-${{ github.run_attempt }}
+          path: summary.json
+          retention-days: 90
