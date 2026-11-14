@@ -114,16 +114,19 @@ jobs:
             -e PER_FUNCTION -e TORCH_INDEX_URL "$IMAGE" bash -euo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq && apt-get install -y -qq python3-venv python3-dev git ninja-build >/dev/null
+              # setup.py runs `git submodule update` in the bind-mounted checkout.
+              git config --global --add safe.directory "*"
               python3 -m venv /venv && . /venv/bin/activate
               pip install -q --upgrade pip
               pip install -q torch --index-url "$TORCH_INDEX_URL"
               # Pin torch for every later pip call (a CUDA wheel from PyPI would replace it).
               pip freeze | grep -iE "^(torch|triton|pytorch-triton-rocm)==" > /tmp/torch-pin.txt
               export PIP_CONSTRAINT=/tmp/torch-pin.txt
-              pip install -q packaging wheel psutil pytest pytest-timeout einops
+              pip install -q setuptools packaging wheel psutil ninja pytest pytest-timeout einops
               if [ "$BACKEND" = triton ]; then export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE; fi
               export GPU_ARCHS="$GFX" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS:-$(nproc)}"
-              pip install -q --no-build-isolation . 2>&1 | tail -5
+              # The build log is the evidence when it fails: keep it visible.
+              pip install -v --no-build-isolation .
               python - <<PY
           import json, torch, flash_attn
           p = torch.cuda.get_device_properties(0)
