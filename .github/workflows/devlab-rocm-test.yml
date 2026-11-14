@@ -108,7 +108,9 @@ jobs:
             [ "$INDEX" = "$idx_in" ] || echo "torch index mapped: $idx_in -> $INDEX"
           fi
           export TORCH_INDEX_URL="$INDEX"
-          docker run --rm --device=/dev/kfd --device=/dev/dri --group-add video --group-add render \
+          # Host networking: the runner resolves its package mirror through
+          # /etc/hosts, which a bridged container does not inherit.
+          docker run --rm --network host --device=/dev/kfd --device=/dev/dri --group-add video --group-add render \
             --security-opt seccomp=unconfined -v "$PWD:/src" -w /src \
             -e BACKEND=${{ matrix.backend }} -e GFX=${{ matrix.gfx }} -e TESTS=${{ matrix.tests }} \
             -e PER_FUNCTION -e TORCH_INDEX_URL "$IMAGE" bash -euo pipefail -c '
