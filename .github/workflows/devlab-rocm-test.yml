@@ -207,6 +207,8 @@ jobs:
       - name: Judge results
         id: judge
         if: always()
+        env:
+          TESTS: ${{ matrix.backend == 'ck' && 'tests/test_flash_attn_ck.py' || 'tests/test_flash_attn_triton_amd.py' }}
         run: |
           python3 - <<'PY'
           import fnmatch, json, os, sys, xml.etree.ElementTree as ET
@@ -218,12 +220,16 @@ jobs:
                   if line and not line.startswith("#"):
                       pat, reason, issue = ([f.strip() for f in line.split("|")] + ["", ""])[:3]
                       known.append((pat, reason, issue or "not filed"))
+          # junit classnames can be relative to the test file's directory
+          # (pytest's rootdir), so resolve them there too.
+          test_dir = os.path.dirname(os.environ.get("TESTS", ""))
           def node_id(tc):
               parts = (tc.get("classname") or "").split(".")
               for i in range(len(parts), 0, -1):
-                  path = "/".join(parts[:i]) + ".py"
-                  if os.path.exists(path):
-                      return "::".join([path] + parts[i:] + [tc.get("name", "")])
+                  for base in ("", test_dir):
+                      path = os.path.join(base, "/".join(parts[:i]) + ".py")
+                      if os.path.exists(path):
+                          return "::".join([path] + parts[i:] + [tc.get("name", "")])
               return "::".join(parts + [tc.get("name", "")])
           verdict, known_ids, new_ids, why = "fail", [], [], ""
           rc = open("pytest-rc.txt").read().strip() if os.path.exists("pytest-rc.txt") else None
