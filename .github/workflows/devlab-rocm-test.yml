@@ -177,7 +177,7 @@ jobs:
           PY
               rc=0
               PYTHONPATH=/src/.devlab DEVLAB_PER="$PER_FUNCTION" DEVLAB_GROUP=function \
-                python -m pytest "$TESTS" -p devlab_sample -q -rf -p no:cacheprovider --timeout=600 \
+                python -m pytest "$TESTS" -p devlab_sample -q -rfEs -p no:cacheprovider --timeout=600 \
                 -n 1 --max-worker-restart=100000 \
                 --junitxml=/src/junit.xml || rc=$?
               # Test failures do not fail this step: "Judge results" decides, against
