@@ -106,6 +106,7 @@ jobs:
           PY
 
       - name: Build and test (${{ matrix.backend }}) in ${{ env.IMAGE }}
+        id: test
         run: |
           set -euo pipefail
           docker pull -q "$IMAGE"
@@ -175,8 +176,68 @@ jobs:
                 python -m pytest "$TESTS" -p devlab_sample -q -rf -p no:cacheprovider --timeout=600 \
                 -n 1 --max-worker-restart=100000 \
                 --junitxml=/src/junit.xml || rc=$?
-              exit $rc
+              # Test failures do not fail this step: "Judge results" decides, against
+              # the known upstream failures. A broken install or build still fails here.
+              echo "$rc" > /src/pytest-rc.txt
             '
+
+      # Red means a new failure or a broken setup. Failures listed in
+      # .github/devlab-known-failures.txt (classified upstream) are warnings.
+      - name: Judge results
+        id: judge
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import fnmatch, json, os, sys, xml.etree.ElementTree as ET
+          known = []
+          kf = ".github/devlab-known-failures.txt"
+          if os.path.exists(kf):
+              for line in open(kf):
+                  line = line.strip()
+                  if line and not line.startswith("#"):
+                      pat, reason, issue = ([f.strip() for f in line.split("|")] + ["", ""])[:3]
+                      known.append((pat, reason, issue or "not filed"))
+          def node_id(tc):
+              parts = (tc.get("classname") or "").split(".")
+              for i in range(len(parts), 0, -1):
+                  path = "/".join(parts[:i]) + ".py"
+                  if os.path.exists(path):
+                      return "::".join([path] + parts[i:] + [tc.get("name", "")])
+              return "::".join(parts + [tc.get("name", "")])
+          verdict, known_ids, new_ids, why = "fail", [], [], ""
+          rc = open("pytest-rc.txt").read().strip() if os.path.exists("pytest-rc.txt") else None
+          if "${{ steps.test.outcome }}" != "success":
+              why = "install, build or smoke check failed: the tests did not run"
+          elif rc not in ("0", "1") or not os.path.exists("junit.xml"):
+              why = f"pytest could not run the tests (exit code {rc}, junit {'present' if os.path.exists('junit.xml') else 'missing'})"
+          else:
+              summ = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
+              for tc in ET.parse("junit.xml").getroot().iter("testcase"):
+                  if tc.find("failure") is None and tc.find("error") is None:
+                      continue
+                  nid = node_id(tc)
+                  hit = next((k for k in known if fnmatch.fnmatchcase(nid, k[0])), None)
+                  if hit:
+                      known_ids.append(nid)
+                      print(f"::warning title=Known upstream failure::{nid} — {hit[1]} ({hit[2]})")
+                      summ.write(f"- known upstream failure: `{nid}` — {hit[1]} ({hit[2]})\n")
+                  else:
+                      new_ids.append(nid)
+                      print(f"::error title=New failure::{nid}")
+                      summ.write(f"- NEW failure: `{nid}`\n")
+              if new_ids:
+                  why = f"{len(new_ids)} failure(s) not in {kf}"
+              elif rc == "1" and not known_ids:
+                  why = "pytest reported failures but junit lists none"
+              else:
+                  verdict = "known-failures" if known_ids else "pass"
+          json.dump({"verdict": verdict, "known_failures": known_ids, "new_failures": new_ids},
+                    open("judge.json", "w"))
+          print(f"verdict: {verdict}" + (f" ({why})" if why else ""))
+          if verdict == "fail":
+              print(f"::error title=Verdict fail::{why}")
+              sys.exit(1)
+          PY
 
       - name: Write the run summary
         if: always()
@@ -197,11 +258,14 @@ jobs:
                        "skipped": n["skipped"],
                        "passed": n["tests"] - n["failures"] - n["errors"] - n["skipped"],
                        "seconds": round(float(s.get("time", 0)), 1)}
+          judge = load("judge.json") or {"verdict": "fail", "known_failures": [], "new_failures": []}
           summary = {
               "schema": 1, "project": "flash-attention", "label": os.environ["LABEL"],
               "release": "${{ github.sha }}"[:12], "combo": "${{ matrix.backend }}",
               "gpu": "${{ matrix.gpu }}", "gfx": "${{ matrix.gfx }}", "env": load("env.json"),
               "smoke": None, "tests": tests, "job_status": "${{ job.status }}",
+              "verdict": judge["verdict"], "known_failures": judge["known_failures"],
+              "new_failures": judge["new_failures"],
               "run": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
               "finished": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
           }

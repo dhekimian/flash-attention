@@ -1,0 +1,3 @@
+# Known upstream failures: reported as warnings, not errors, by the DevLab workflows.
+# One per line:  <fnmatch pattern on the pytest node id> | <reason> | <upstream issue URL or "not filed">
+# List a failure here only once it is classified as upstream, never for a setup bug of ours.
