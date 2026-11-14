@@ -141,16 +141,21 @@ jobs:
               pip install -q --upgrade pip
               pip install -q torch --index-url "$TORCH_INDEX_URL" $TORCH_EXTRA_INDEX_ARGS
               # Pin torch for every later pip call (a CUDA wheel from PyPI would replace it).
-              pip freeze | grep -iE "^(torch|triton|pytorch-triton-rocm)==" > /tmp/torch-pin.txt
+              pip freeze | grep -iE "^(torch|triton|triton-rocm|pytorch-triton-rocm)==" > /tmp/torch-pin.txt
+              cat /tmp/torch-pin.txt
               export PIP_CONSTRAINT=/tmp/torch-pin.txt
               # pyyaml: aiter imports it at import time but does not declare it (only in its requirements.txt).
-              pip install -q setuptools packaging wheel psutil ninja pyyaml pytest pytest-timeout einops
+              pip install -q setuptools packaging wheel psutil ninja pyyaml pytest pytest-timeout pytest-xdist einops
               if [ "$BACKEND" = triton ]; then export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE; fi
               export GPU_ARCHS="$GFX" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS:-$(nproc)}"
               # The build log is the evidence when it fails: keep it visible.
-              pip install -v --no-build-isolation .
+              # --no-deps: flash-attn requires "triton", but ROCm torch ships its Triton
+              # under another distribution name, so pip would install a second Triton
+              # from PyPI over the one torch was built with. einops is installed above.
+              pip install -v --no-build-isolation --no-deps .
+              pip freeze | grep -iE "^(torch|triton|pytorch-triton|amd-aiter|flash)"
               python - <<PY
-          import json, torch, flash_attn
+          import json, torch, triton, flash_attn
           p = torch.cuda.get_device_properties(0)
           ck = True
           try:
@@ -158,7 +163,7 @@ jobs:
           except ImportError:
               ck = False
           info = {"torch": torch.__version__, "hip": torch.version.hip, "device": p.name,
-                  "arch": p.gcnArchName, "flash_attn": flash_attn.__version__, "ck_loaded": ck}
+                  "arch": p.gcnArchName, "triton": triton.__version__, "flash_attn": flash_attn.__version__, "ck_loaded": ck}
           print(info)
           json.dump(info, open("/src/env.json", "w"))
           assert "$GFX" in p.gcnArchName, p.gcnArchName
@@ -168,6 +173,7 @@ jobs:
               rc=0
               PYTHONPATH=/src/.devlab DEVLAB_PER="$PER_FUNCTION" DEVLAB_GROUP=function \
                 python -m pytest "$TESTS" -p devlab_sample -q -rf -p no:cacheprovider --timeout=600 \
+                -n 1 --max-worker-restart=100000 \
                 --junitxml=/src/junit.xml || rc=$?
               exit $rc
             '
