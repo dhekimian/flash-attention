@@ -29,6 +29,9 @@ on:
     inputs:
       image: {type: string, default: rocm/dev-ubuntu-24.04:7.2.4-complete}
       torch_index_url: {type: string, default: https://download.pytorch.org/whl/rocm7.2}
+      # pip requirement for torch; "{gfx}" becomes the leg's GPU target
+      # (AMD's ROCm 10.x indexes: "torch[device-{gfx}]==<version>").
+      torch_spec: {type: string, default: torch}
       tests_per_function: {type: string, default: "20"}
       label: {type: string, default: release}
 
@@ -57,6 +60,7 @@ jobs:
     env:
       IMAGE: ${{ inputs.image || 'rocm/dev-ubuntu-24.04:7.2.4-complete' }}
       TORCH_INDEX_URL: ${{ inputs.torch_index_url || 'https://download.pytorch.org/whl/rocm7.2' }}
+      TORCH_SPEC: ${{ inputs.torch_spec || 'torch' }}
       PER_FUNCTION: ${{ inputs.tests_per_function || '20' }}
       LABEL: ${{ inputs.label || 'release' }}
       TORCH_INDEX_MAP: ${{ vars.TORCH_INDEX_MAP }}
@@ -131,7 +135,7 @@ jobs:
           docker run --rm --network host --device=/dev/kfd --device=/dev/dri --group-add video --group-add render \
             --security-opt seccomp=unconfined -v "$PWD:/src" -w /src \
             -e BACKEND=${{ matrix.backend }} -e GFX=${{ matrix.gfx }} -e TESTS=${{ matrix.tests }} \
-            -e PER_FUNCTION -e TORCH_INDEX_URL -e TORCH_EXTRA_INDEX_ARGS "$IMAGE" bash -euo pipefail -c '
+            -e PER_FUNCTION -e TORCH_INDEX_URL -e TORCH_EXTRA_INDEX_ARGS -e TORCH_SPEC "$IMAGE" bash -euo pipefail -c '
               # Hand /src back to the runner user however this exits.
               trap '"'"'chown -R "$(stat -c %u:%g /src/.git)" /src'"'"' EXIT
               export DEBIAN_FRONTEND=noninteractive
@@ -140,7 +144,7 @@ jobs:
               git config --global --add safe.directory "*"
               python3 -m venv /venv && . /venv/bin/activate
               pip install -q --upgrade pip
-              pip install -q torch --index-url "$TORCH_INDEX_URL" $TORCH_EXTRA_INDEX_ARGS
+              pip install -q "${TORCH_SPEC//\{gfx\}/$GFX}" --index-url "$TORCH_INDEX_URL" $TORCH_EXTRA_INDEX_ARGS
               # Pin torch for every later pip call (a CUDA wheel from PyPI would replace it).
               pip freeze | grep -iE "^(torch|triton|triton-rocm|pytorch-triton-rocm)==" > /tmp/torch-pin.txt
               cat /tmp/torch-pin.txt

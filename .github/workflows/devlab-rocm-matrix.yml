@@ -1,0 +1,44 @@
+# The ROCm test (devlab-rocm-test.yml) across ROCm releases: each line pairs a
+# rocm/dev-ubuntu image with the torch built for the same ROCm.
+name: ROCm version matrix (gfx1151, gfx1201)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tests_per_function:
+        description: Test cases to run per test function
+        default: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  rocm72:
+    uses: ./.github/workflows/devlab-rocm-test.yml
+    with:
+      label: rocm7.2
+      image: rocm/dev-ubuntu-24.04:7.2.4-complete
+      torch_index_url: https://download.pytorch.org/whl/rocm7.2
+      tests_per_function: ${{ inputs.tests_per_function }}
+  rocm714:
+    uses: ./.github/workflows/devlab-rocm-test.yml
+    with:
+      label: rocm7.14
+      image: rocm/dev-ubuntu-24.04:7.14.1-full
+      torch_index_url: https://download.pytorch.org/whl/rocm7.14
+      tests_per_function: ${{ inputs.tests_per_function }}
+  rocm100:
+    uses: ./.github/workflows/devlab-rocm-test.yml
+    with:
+      label: rocm10.0
+      image: rocm/dev-ubuntu-24.04:10.0.0-full
+      torch_index_url: https://download.pytorch.org/whl/rocm10.0
+      tests_per_function: ${{ inputs.tests_per_function }}
+  rocm101:
+    uses: ./.github/workflows/devlab-rocm-test.yml
+    with:
+      label: rocm10.1
+      image: rocm/dev-ubuntu-24.04:10.1.0-full
+      torch_index_url: https://stable.repo.amd.com/rocm/whl-next/
+      torch_spec: "torch[device-{gfx}]==2.14.0+rocm10.1.0"
+      tests_per_function: ${{ inputs.tests_per_function }}
