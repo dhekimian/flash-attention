@@ -8,6 +8,9 @@ on:
       tests_per_function:
         description: Test cases to run per test function
         default: "20"
+      backends:
+        description: Backends to run (JSON list)
+        default: '["ck", "triton"]'
 
 permissions:
   contents: read
@@ -20,6 +23,7 @@ jobs:
       image: rocm/dev-ubuntu-24.04:7.2.4-complete
       torch_index_url: https://download.pytorch.org/whl/rocm7.2
       tests_per_function: ${{ inputs.tests_per_function }}
+      backends: ${{ inputs.backends }}
   rocm714:
     uses: ./.github/workflows/devlab-rocm-test.yml
     with:
@@ -27,6 +31,7 @@ jobs:
       image: rocm/dev-ubuntu-24.04:7.14.1-full
       torch_index_url: https://download.pytorch.org/whl/rocm7.14
       tests_per_function: ${{ inputs.tests_per_function }}
+      backends: ${{ inputs.backends }}
   rocm100:
     uses: ./.github/workflows/devlab-rocm-test.yml
     with:
@@ -34,6 +39,7 @@ jobs:
       image: rocm/dev-ubuntu-24.04:10.0.0-full
       torch_index_url: https://download.pytorch.org/whl/rocm10.0
       tests_per_function: ${{ inputs.tests_per_function }}
+      backends: ${{ inputs.backends }}
   rocm101:
     uses: ./.github/workflows/devlab-rocm-test.yml
     with:
@@ -42,3 +48,4 @@ jobs:
       torch_index_url: https://stable.repo.amd.com/rocm/whl-next/
       torch_spec: "torch[device-{gfx}]==2.14.0+rocm10.1.0"
       tests_per_function: ${{ inputs.tests_per_function }}
+      backends: ${{ inputs.backends }}

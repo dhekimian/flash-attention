@@ -29,6 +29,7 @@ on:
       torch_index_url: {description: torch index, default: https://download.pytorch.org/whl/rocm7.2}
       torch_spec: {description: 'torch requirement ("{gfx}" = GPU target)', default: torch}
       label: {description: Run label (also the concurrency group), default: release}
+      backends: {description: 'Backends to run (JSON list)', default: '["ck", "triton"]'}
   workflow_call:
     inputs:
       image: {type: string, default: rocm/dev-ubuntu-24.04:7.2.4-complete}
@@ -38,6 +39,7 @@ on:
       torch_spec: {type: string, default: torch}
       tests_per_function: {type: string, default: "20"}
       label: {type: string, default: release}
+      backends: {type: string, default: '["ck", "triton"]'}
 
 permissions:
   contents: read
@@ -52,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [ck, triton]
+        backend: ${{ fromJSON(inputs.backends || '["ck", "triton"]') }}
         gpu: [strix-halo, radeon-r9700]
         include:
           - {gpu: strix-halo, gfx: gfx1151}
@@ -163,7 +165,11 @@ jobs:
               # pyyaml: aiter imports it at import time but does not declare it (only in its requirements.txt).
               pip install setuptools packaging wheel psutil ninja pyyaml pytest pytest-timeout pytest-xdist einops
               triton_is build-deps
-              if [ "$BACKEND" = triton ]; then export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE; fi
+              # AITER_USE_SYSTEM_TRITON: on torch >= 2.9.1 the bundled aiter's setup.py
+              # otherwise uninstalls torch's Triton and installs triton 3.8.0 from
+              # pypi.amd.com for the image's ROCm; where that fails (ROCm 10.1) it
+              # leaves no Triton at all. Test with the Triton torch was built with.
+              if [ "$BACKEND" = triton ]; then export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE AITER_USE_SYSTEM_TRITON=1; fi
               export GPU_ARCHS="$GFX" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS:-$(nproc)}"
               # The build log is the evidence when it fails: keep it visible.
               # --no-deps: flash-attn requires "triton", but ROCm torch ships its Triton
