@@ -132,7 +132,11 @@ jobs:
           export TORCH_INDEX_URL="$INDEX" TORCH_EXTRA_INDEX_ARGS="${EXTRA[*]}"
           # Host networking: the runner resolves its package mirror through
           # /etc/hosts, which a bridged container does not inherit.
-          docker run --rm --network host --device=/dev/kfd --device=/dev/dri --group-add video --group-add render \
+          # Numeric GIDs of the GPU device nodes: group names such as "render" do
+          # not exist in every image's /etc/group (the ROCm 10.x images lack it).
+          GPU_GROUPS=()
+          for g in $(stat -c %g /dev/kfd /dev/dri/renderD* | sort -u); do GPU_GROUPS+=(--group-add "$g"); done
+          docker run --rm --network host --device=/dev/kfd --device=/dev/dri "${GPU_GROUPS[@]}" \
             --security-opt seccomp=unconfined -v "$PWD:/src" -w /src \
             -e BACKEND=${{ matrix.backend }} -e GFX=${{ matrix.gfx }} -e TESTS=${{ matrix.tests }} \
             -e PER_FUNCTION -e TORCH_INDEX_URL -e TORCH_EXTRA_INDEX_ARGS -e TORCH_SPEC "$IMAGE" bash -euo pipefail -c '
