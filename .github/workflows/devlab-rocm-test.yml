@@ -25,6 +25,10 @@ on:
       tests_per_function:
         description: Test cases to run per test function
         default: "20"
+      image: {description: Container image, default: rocm/dev-ubuntu-24.04:7.2.4-complete}
+      torch_index_url: {description: torch index, default: https://download.pytorch.org/whl/rocm7.2}
+      torch_spec: {description: 'torch requirement ("{gfx}" = GPU target)', default: torch}
+      label: {description: Run label (also the concurrency group), default: release}
   workflow_call:
     inputs:
       image: {type: string, default: rocm/dev-ubuntu-24.04:7.2.4-complete}
@@ -148,13 +152,17 @@ jobs:
               git config --global --add safe.directory "*"
               python3 -m venv /venv && . /venv/bin/activate
               pip install -q --upgrade pip
+              # Which Triton is installed after each install step (some steps can replace or remove it).
+              triton_is() { local v; v=$(pip list 2>/dev/null | grep -iE "^(triton|triton-rocm|pytorch-triton-rocm) " | tr -s " " | paste -sd, -) || true; echo "[triton after $1] ${v:-none}"; }
               pip install -q "${TORCH_SPEC//\{gfx\}/$GFX}" --index-url "$TORCH_INDEX_URL" $TORCH_EXTRA_INDEX_ARGS
               # Pin torch for every later pip call (a CUDA wheel from PyPI would replace it).
               pip freeze | grep -iE "^(torch|triton|triton-rocm|pytorch-triton-rocm)==" > /tmp/torch-pin.txt
               cat /tmp/torch-pin.txt
+              triton_is torch
               export PIP_CONSTRAINT=/tmp/torch-pin.txt
               # pyyaml: aiter imports it at import time but does not declare it (only in its requirements.txt).
-              pip install -q setuptools packaging wheel psutil ninja pyyaml pytest pytest-timeout pytest-xdist einops
+              pip install setuptools packaging wheel psutil ninja pyyaml pytest pytest-timeout pytest-xdist einops
+              triton_is build-deps
               if [ "$BACKEND" = triton ]; then export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE; fi
               export GPU_ARCHS="$GFX" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS:-$(nproc)}"
               # The build log is the evidence when it fails: keep it visible.
@@ -163,6 +171,7 @@ jobs:
               # from PyPI over the one torch was built with. einops is installed above.
               pip install -v --no-build-isolation --no-deps .
               pip freeze | grep -iE "^(torch|triton|pytorch-triton|amd-aiter|flash)"
+              triton_is flash-attn
               python - <<PY
           import json, torch, triton, flash_attn
           p = torch.cuda.get_device_properties(0)
