@@ -163,9 +163,9 @@ jobs:
               # pyyaml: aiter imports it at import time but does not declare it (only in its requirements.txt).
               pip install setuptools packaging wheel psutil ninja pyyaml pytest pytest-timeout pytest-xdist einops
               triton_is build-deps
-              # AITER_USE_SYSTEM_TRITON: on torch >= 2.9.1 the bundled aiter's setup.py
-              # otherwise uninstalls torch's Triton and installs triton 3.8.0 from
-              # pypi.amd.com for the image's ROCm; where that fails (ROCm 10.1) it
+              # AITER_USE_SYSTEM_TRITON: on torch >= 2.9.1 the setup.py of the bundled aiter
+              # otherwise uninstalls the Triton of torch and installs triton 3.8.0 from
+              # pypi.amd.com for the ROCm of the image; where that fails (ROCm 10.1) it
               # leaves no Triton at all. Test with the Triton torch was built with.
               if [ "$BACKEND" = triton ]; then export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE AITER_USE_SYSTEM_TRITON=1; fi
               export GPU_ARCHS="$GFX" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS:-$(nproc)}"
