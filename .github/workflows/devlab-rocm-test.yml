@@ -59,6 +59,7 @@ jobs:
       TORCH_INDEX_URL: ${{ inputs.torch_index_url || 'https://download.pytorch.org/whl/rocm7.2' }}
       PER_FUNCTION: ${{ inputs.tests_per_function || '20' }}
       LABEL: ${{ inputs.label || 'release' }}
+      TORCH_INDEX_MAP: ${{ vars.TORCH_INDEX_MAP }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +69,16 @@ jobs:
         run: |
           set -euo pipefail
           docker pull -q "$IMAGE"
+          INDEX="$TORCH_INDEX_URL"
+          # A runner pool with a package mirror maps public indexes to it with the
+          # TORCH_INDEX_MAP repository variable (JSON: index URL -> mirror URL).
+          # Unset, the index is used as given.
+          if [ -n "${TORCH_INDEX_MAP:-}" ]; then
+            idx_in="$INDEX"
+            INDEX=$(python3 -c 'import json,sys; m=json.loads(sys.argv[1]); u=sys.argv[2]; print(m.get(u.rstrip("/")+"/", m.get(u.rstrip("/"), u)))' "$TORCH_INDEX_MAP" "$INDEX")
+            [ "$INDEX" = "$idx_in" ] || echo "torch index mapped: $idx_in -> $INDEX"
+          fi
+          export TORCH_INDEX_URL="$INDEX"
           docker run --rm --device=/dev/kfd --device=/dev/dri --group-add video --group-add render \
             --security-opt seccomp=unconfined -v "$PWD:/src" -w /src \
             -e BACKEND=${{ matrix.backend }} -e GFX=${{ matrix.gfx }} -e TESTS=${{ matrix.tests }} \
